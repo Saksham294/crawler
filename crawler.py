@@ -21,20 +21,20 @@ ALLOWED_SITEMAP_PATTERNS = [
     "inventory", "sitemap-v2", "sitemap/pdp", "sitemaps/prod", "prod-"
 ]
 
+
 IGNORE_EXTENSIONS = (
     ".jpg", ".jpeg", ".png", ".gif", ".svg",
     ".css", ".js", ".webp", ".woff", ".woff2", ".ttf"
 )
 
+
+EXCLUDED_PATTERNS = ["collection", "category", "blog", "cdn", "image", "product-listing"]
+
 # --- Global dictionary to force Selenium for a domain once a 403 is encountered ---
 FORCE_SELENIUM = {}
 
-# Global counter for gz sitemaps processing
-# PROCESSED_GZ_COUNT = 0
-# MAX_GZ_COUNT = 100
-
-
-CHROMEDRIVER_PATH = "/path/to/your/chromedriver"
+# --- ChromeDriver Setup for Selenium Fallback ---
+CHROMEDRIVER_PATH = "/path/to/your/chromedriver"  # update with your actual path
 chrome_options = Options()
 chrome_options.add_argument('--headless')  # Run in headless mode
 chrome_options.add_argument(
@@ -72,6 +72,7 @@ def get_sitemap_content(url):
 
 
 def get_sitemap_content_with_selenium(url):
+    """Fallback: Fetch sitemap content using Selenium."""
     print(f"📄 Selenium fetching content: {url}")
     driver = webdriver.Chrome(service=service_obj, options=chrome_options)
     driver.get(url)
@@ -82,6 +83,7 @@ def get_sitemap_content_with_selenium(url):
 
 
 def get_sitemap_links_with_selenium(url):
+    """Fallback: Fetch sitemap links using Selenium."""
     print(f"📄 Selenium fetching links: {url}")
     driver = webdriver.Chrome(service=service_obj, options=chrome_options)
     driver.get(url)
@@ -92,6 +94,10 @@ def get_sitemap_links_with_selenium(url):
 
 
 def get_sitemap_links(url):
+    """
+    Fetch all links from a given sitemap URL.
+    Uses requests (and get_sitemap_content) unless the domain is flagged for Selenium.
+    """
     domain = urlparse(url).netloc
     if FORCE_SELENIUM.get(domain, False):
         return get_sitemap_links_with_selenium(url)
@@ -125,10 +131,6 @@ def get_sitemap_links(url):
 
 
 def is_terminal_sitemap(url):
-    """
-    Determines whether the sitemap at the given URL is terminal (has <urlset>) or an index (has <sitemapindex>).
-    Uses requests; if that fails (e.g., 403), falls back to Selenium.
-    """
     try:
         content = get_sitemap_content(url)
     except Exception as e:
@@ -143,30 +145,37 @@ def is_terminal_sitemap(url):
 
 
 def should_search_deeper(link):
-  
-    #Check if the link should be recursively searched.
-    
+    """
+    Check if the link should be recursively searched.
+    """
     parsed = urlparse(link)
     path = parsed.path.lower()
     return ".xml" in path and any(pattern in link.lower() for pattern in PRODUCT_SITEMAP_PATTERNS)
 
 
 def is_valid_product_link(link, base_domain):
-   
-    #Check if a link is a valid product link.
-   
     parsed_url = urlparse(link)
     if base_domain not in parsed_url.netloc:
         return False
-    if parsed_url.path.endswith(IGNORE_EXTENSIONS):
+    if any(parsed_url.path.lower().endswith(ext) for ext in IGNORE_EXTENSIONS):
         return False
-    return any(pattern in parsed_url.path for pattern in PRODUCT_PATTERNS)
+    # Exclude links from known asset/CDN domains
+    IGNORED_DOMAINS = ["cdn.shopify.com", "images.ctfassets.net", "assets.adobedtm.com"]
+    if any(ignored in parsed_url.netloc for ignored in IGNORED_DOMAINS):
+        return False
+    # Must match one of the product patterns
+    if not any(pattern in parsed_url.path for pattern in PRODUCT_PATTERNS):
+        return False
+    # Exclude unwanted patterns (e.g., collections, categories, blogs)
+    if any(excl in parsed_url.path.lower() for excl in ["collection", "category", "blog"]):
+        return False
+    return True
 
 
 def fetch_product_links_from_sitemaps(sitemap_url, visited_sitemaps=None):
     """
     Recursively fetch product links from product sitemaps.
-    If the sitemap is terminal (<urlset>), return its links directly (ignoring unwanted extensions).
+    If the sitemap is terminal (<urlset>), return its links directly (after filtering).
     Otherwise, for each link:
       - If it contains ".xml" and should be searched deeper, process it recursively.
       - Else, if it is a valid product link, add it.
@@ -188,7 +197,7 @@ def fetch_product_links_from_sitemaps(sitemap_url, visited_sitemaps=None):
             if link.startswith("/"):
                 link = urljoin(sitemap_url, link)
             normalized_link = link.rstrip("/")
-            if not normalized_link.endswith(IGNORE_EXTENSIONS):
+            if is_valid_product_link(normalized_link, base_domain):
                 product_links.add(normalized_link)
         return list(product_links)
     else:
@@ -240,6 +249,7 @@ def save_to_excel(links, filename="filtered_products.xlsx"):
 
 def main():
     websites = []
+
     for website in websites:
         print(f"\n========== Processing {website} ==========")
         sitemaps = get_sitemaps_from_robots(website)
